@@ -1,0 +1,346 @@
+/* Принципы: плоско, без теней/градиентов, один акцент, иерархия (canvas skill). */
+
+:root {
+  --bg: #0c0b09;
+  --surface: #141311;
+  --line: #2a2723;
+  --text: #e6e2da;
+  --text-quiet: #7f7a72;
+  --accent: #c4a035;
+  --accent-dim: #8f7a28;
+  --preview-bg: #050504;
+  --focus: #d4bc4a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  padding: 1.5rem 1.75rem 2rem;
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.header {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.65rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+
+.title-tag {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-quiet);
+  letter-spacing: 0.02em;
+}
+
+.lede {
+  margin: 0;
+  max-width: 42rem;
+  color: var(--text-quiet);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+.source-block {
+  margin-bottom: 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.source-block-title {
+  margin: 0 0 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-quiet);
+}
+
+.source-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.85rem;
+}
+
+.source-tab {
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--text-quiet);
+  cursor: pointer;
+}
+
+.source-tab:hover {
+  color: var(--text);
+  background: #1c1a17;
+}
+
+.source-tab:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.source-tab[aria-selected='true'] {
+  color: var(--text);
+  border-color: var(--accent-dim);
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+.source-panels {
+  min-height: 3.25rem;
+}
+
+.source-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.25rem;
+  align-items: flex-end;
+}
+
+.source-panel--hidden {
+  display: none !important;
+}
+
+.source-hint {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-quiet);
+  line-height: 1.4;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.25rem;
+  align-items: flex-end;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 200px;
+}
+
+.field.interval {
+  min-width: 118px;
+}
+
+.field.mode-field {
+  min-width: 200px;
+}
+
+.field.stream-field {
+  flex: 1 1 240px;
+  min-width: min(100%, 280px);
+  max-width: 520px;
+}
+
+.field label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-quiet);
+}
+
+select,
+input[type='number'],
+input[type='url'] {
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.4rem 0.55rem;
+  font-size: 0.9375rem;
+}
+
+select:focus,
+input[type='number']:focus,
+input[type='url']:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.btn {
+  font-family: inherit;
+  border: 1px solid var(--accent-dim);
+  border-radius: 2px;
+  padding: 0.45rem 0.95rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--accent);
+  color: #1a1708;
+  height: fit-content;
+}
+
+.btn:hover {
+  background: #d4b84a;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.btn.secondary {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--line);
+  font-weight: 500;
+}
+
+.btn.secondary:hover {
+  background: #1c1a17;
+}
+
+.preview-wrap {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--preview-bg);
+  aspect-ratio: 16 / 9;
+  max-height: 50vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  vertical-align: middle;
+  background: #000;
+}
+
+.grab {
+  display: none;
+}
+
+/* Иерархия: главное — число; остальное вторично, не три одинаковые «карточки». */
+.stats {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 200px);
+  gap: 1rem 1.5rem;
+  margin-top: 1.25rem;
+  align-items: end;
+}
+
+.stat--hero {
+  padding: 0.25rem 0 0.25rem 0.85rem;
+  border-left: 3px solid var(--accent);
+}
+
+.stat--hero .label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-quiet);
+  margin-bottom: 0.2rem;
+}
+
+.stat--hero .value {
+  font-size: 2.75rem;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat--side {
+  padding: 0.5rem 0;
+  border-bottom: none;
+}
+
+.stat--side .label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-quiet);
+  margin-bottom: 0.25rem;
+}
+
+.stat--side .value-mono {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 1rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.status-line {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.875rem;
+  color: var(--text-quiet);
+  line-height: 1.4;
+}
+
+.help-block {
+  margin-top: 1.75rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.help-block-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-quiet);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.help-author {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+@media (max-width: 640px) {
+  .stats {
+    grid-template-columns: 1fr;
+  }
+
+  .stat--hero .value {
+    font-size: 2.25rem;
+  }
+}

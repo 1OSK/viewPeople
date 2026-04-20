@@ -1,0 +1,14 @@
+node_modules/
+out/
+release/
+dist/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+
+# Тяжёлые бинарники; подтягиваются `npm run setup:assets` перед сборкой установщика
+resources/models/yolov8n.onnx
+resources/bin/yt-dlp.exe

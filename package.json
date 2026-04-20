@@ -1,0 +1,85 @@
+{
+  "name": "viewpeople",
+  "version": "0.1.0",
+  "description": "Подсчёт людей в кадре (камера / тестовое видео)",
+  "main": "./out/main/index.js",
+  "author": "Ильин Константин Юрьевич ИУ5-81Б",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "setup:assets": "node scripts/fetch-yolo-model.mjs && node scripts/fetch-ytdlp.mjs",
+    "build": "electron-vite build",
+    "build:win": "npm run setup:assets && npm run build && electron-builder --win",
+    "preview": "electron-vite preview"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.2.5",
+    "@fontsource/ibm-plex-sans": "^5.2.5",
+    "@tensorflow-models/coco-ssd": "^2.2.3",
+    "@tensorflow/tfjs": "^4.22.0",
+    "electron-store": "^8.2.0",
+    "hls.js": "^1.5.20",
+    "onnxruntime-web": "1.20.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "electron": "^35.1.5",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.2.6"
+  },
+  "build": {
+    "appId": "com.viewpeople.app",
+    "productName": "ViewPeople",
+    "toolsets": {
+      "winCodeSign": "1.1.0"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "extraResources": [
+      {
+        "from": "resources/models",
+        "to": "models",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "node_modules/onnxruntime-web/dist",
+        "to": "ort",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
+  }
+}
