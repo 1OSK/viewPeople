@@ -2,8 +2,10 @@ import type { DetectorMode } from '../../../shared/detector'
 import type { AppSettings } from '../../../shared/settings'
 import {
   countPeopleOnCanvas,
+  countPeopleOnImageBitmap,
   disposeDetectorWorker,
   ensureDetectorLoaded,
+  ensureSecondDetectorWorker,
   setDetectorConfig
 } from '../detector'
 import { createIntervalMs, drawVideoFrame } from '../pipeline'
@@ -33,7 +35,7 @@ export function mountApp(root: HTMLElement): void {
           <h1 class="title">ViewPeople</h1>
           <span class="title-tag">подсчёт в кадре</span>
         </div>
-        <p class="lede">Сначала выберите источник кадра, затем детектор. Трансляции — URL (Twitch и др.) через yt-dlp из сборки.</p>
+        <p class="lede">В режиме «Камера» — одновременно до двух устройств и отдельный счёт. Файл и поток — один кадр. Трансляции — URL (Twitch и др.) через yt-dlp из сборки.</p>
       </header>
 
       <section class="source-block" aria-label="Источник изображения">
@@ -52,8 +54,14 @@ export function mountApp(root: HTMLElement): void {
         <div class="source-panels">
           <div class="source-panel" id="panel-camera" role="tabpanel" aria-labelledby="tab-camera">
             <div class="field">
-              <label for="cam-select">Устройство</label>
-              <select id="cam-select"></select>
+              <label for="cam-select">Камера 1</label>
+              <select id="cam-select" aria-label="Первая камера"></select>
+            </div>
+            <div class="field">
+              <label for="cam-select-2">Камера 2</label>
+              <select id="cam-select-2" aria-label="Вторая камера (необязательно)">
+                <option value="">— не выбрана —</option>
+              </select>
             </div>
             <button type="button" class="btn secondary" id="btn-refresh">Обновить список</button>
           </div>
@@ -92,14 +100,40 @@ export function mountApp(root: HTMLElement): void {
         </div>
       </section>
 
-      <section class="preview-wrap">
-        <video id="preview" class="preview" playsinline muted></video>
+      <section class="preview-wrap" id="preview-wrap" aria-label="Превью">
+        <div class="preview-row-dual" id="preview-dual" hidden>
+          <div class="preview-cell">
+            <video id="preview-1" class="preview" playsinline muted></video>
+            <p class="preview-label">Камера 1</p>
+          </div>
+          <div class="preview-cell">
+            <video id="preview-2" class="preview" playsinline muted></video>
+            <p class="preview-label">Камера 2</p>
+          </div>
+        </div>
+        <div class="preview-row-single" id="preview-single">
+          <video id="preview" class="preview" playsinline muted></video>
+        </div>
       </section>
 
       <canvas id="grab" class="grab" width="0" height="0" hidden></canvas>
 
       <section class="stats" aria-label="Результат">
-        <div class="stat stat--hero">
+        <div id="stats-hero-dual" class="stats-hero-dual" hidden>
+          <div class="stat stat--hero stat--cam">
+            <span class="label">Камера 1, людей</span>
+            <span class="value" id="count-1">—</span>
+          </div>
+          <div class="stat stat--hero stat--cam">
+            <span class="label">Камера 2, людей</span>
+            <span class="value" id="count-2">—</span>
+          </div>
+          <div class="stat stat--hero stat--cam stat--total">
+            <span class="label">Итого (камера 1 + камера 2)</span>
+            <span class="value" id="count-total">—</span>
+          </div>
+        </div>
+        <div id="stats-hero-single" class="stat stat--hero">
           <span class="label">Людей в кадре</span>
           <span class="value" id="count">—</span>
         </div>
@@ -118,15 +152,26 @@ export function mountApp(root: HTMLElement): void {
   `
 
   const video = qs<HTMLVideoElement>(root, '#preview')!
+  const video1 = qs<HTMLVideoElement>(root, '#preview-1')!
+  const video2 = qs<HTMLVideoElement>(root, '#preview-2')!
+  const previewWrap = qs<HTMLElement>(root, '#preview-wrap')!
+  const previewDual = qs<HTMLElement>(root, '#preview-dual')!
+  const previewSingle = qs<HTMLElement>(root, '#preview-single')!
+  const statsHeroDual = qs<HTMLElement>(root, '#stats-hero-dual')!
+  const statsHeroSingle = qs<HTMLElement>(root, '#stats-hero-single')!
   const canvas = qs<HTMLCanvasElement>(root, '#grab')!
   const modeSelect = qs<HTMLSelectElement>(root, '#detector-mode')!
   const camSelect = qs<HTMLSelectElement>(root, '#cam-select')!
+  const camSelect2 = qs<HTMLSelectElement>(root, '#cam-select-2')!
   const btnRefresh = qs<HTMLButtonElement>(root, '#btn-refresh')!
   const btnFile = qs<HTMLButtonElement>(root, '#btn-file')!
   const streamUrlInput = qs<HTMLInputElement>(root, '#stream-url')!
   const btnStream = qs<HTMLButtonElement>(root, '#btn-stream')!
   const intervalInput = qs<HTMLInputElement>(root, '#interval')!
   const countEl = qs(root, '#count')!
+  const count1El = qs(root, '#count-1')!
+  const count2El = qs(root, '#count-2')!
+  const countTotalEl = qs(root, '#count-total')!
   const lastFrameEl = qs(root, '#last-frame')!
   const statusEl = qs(root, '#status')!
 
@@ -142,9 +187,21 @@ export function mountApp(root: HTMLElement): void {
   let busy = false
   let lastAppliedMode: DetectorMode = 'coco-ssd'
   let activeVideoSource: VideoSourceMode = 'camera'
+  /** Номер актуального асинхронного переключения источника (защита от гонок UI). */
+  let sourceSwitchToken = 0
 
   const setStatus = (text: string): void => {
     statusEl.textContent = text
+  }
+
+  /** Режим «камера»: два превью + два показателя; иначе одно полноэкранное превью и одно число. */
+  const syncPreviewAndStats = (): void => {
+    const dual = activeVideoSource === 'camera'
+    previewWrap.classList.toggle('preview-wrap--dual', dual)
+    previewDual.hidden = !dual
+    previewSingle.hidden = dual
+    statsHeroDual.hidden = !dual
+    statsHeroSingle.hidden = dual
   }
 
   const stopTimer = (): void => {
@@ -157,7 +214,12 @@ export function mountApp(root: HTMLElement): void {
   const prepareVideoSwitch = (): void => {
     stopTimer()
     stopVideoElement(video)
+    stopVideoElement(video1)
+    stopVideoElement(video2)
     countEl.textContent = '—'
+    count1El.textContent = '—'
+    count2El.textContent = '—'
+    countTotalEl.textContent = '—'
     lastFrameEl.textContent = '—'
   }
 
@@ -180,6 +242,7 @@ export function mountApp(root: HTMLElement): void {
       el.classList.toggle('source-panel--hidden', !show)
       el.hidden = !show
     }
+    syncPreviewAndStats()
   }
 
   const startTimer = (): void => {
@@ -191,6 +254,83 @@ export function mountApp(root: HTMLElement): void {
 
   const tick = async (): Promise<void> => {
     if (busy) {
+      return
+    }
+    if (activeVideoSource === 'camera') {
+      const id2 = camSelect2.value
+      const snap1 = drawVideoFrame(video1, canvas)
+      if (!snap1) {
+        return
+      }
+      busy = true
+      const t0 = snap1.capturedAt
+      lastFrameEl.textContent = new Date(t0).toLocaleTimeString()
+      try {
+        if (id2) {
+          const bitmap1 = await createImageBitmap(canvas)
+          try {
+            const snap2 = drawVideoFrame(video2, canvas)
+            if (!snap2) {
+              const n1 = await countPeopleOnImageBitmap(bitmap1, 0, 0.5)
+              count1El.textContent = String(n1)
+              count2El.textContent = '—'
+              countTotalEl.textContent = String(n1)
+              return
+            }
+            const t1 = Math.max(t0, snap2.capturedAt)
+            lastFrameEl.textContent = new Date(t1).toLocaleTimeString()
+            const bitmap2 = await createImageBitmap(canvas)
+            try {
+              const [r0, r1] = await Promise.allSettled([
+                countPeopleOnImageBitmap(bitmap1, 0, 0.5),
+                countPeopleOnImageBitmap(bitmap2, 1, 0.5)
+              ])
+              if (r0.status === 'fulfilled') {
+                count1El.textContent = String(r0.value)
+              } else {
+                count1El.textContent = '—'
+              }
+              if (r1.status === 'fulfilled') {
+                count2El.textContent = String(r1.value)
+              } else {
+                count2El.textContent = '—'
+              }
+              const v1 = r0.status === 'fulfilled' ? r0.value : 0
+              const v2 = r1.status === 'fulfilled' ? r1.value : 0
+              countTotalEl.textContent = String(v1 + v2)
+              const err0 = r0.status === 'rejected' ? r0.reason : null
+              const err1 = r1.status === 'rejected' ? r1.reason : null
+              if (err0 ?? err1) {
+                const parts = [err0, err1]
+                  .filter((x) => x != null)
+                  .map((e) => (e instanceof Error ? e.message : String(e)))
+                setStatus(`Детекция: ${parts.join(' · ')}`)
+              }
+            } finally {
+              try {
+                bitmap2.close()
+              } catch {
+                // no-op: bitmap may already be detached/closed after transfer
+              }
+            }
+          } finally {
+            try {
+              bitmap1.close()
+            } catch {
+              // no-op: bitmap may already be detached/closed after transfer
+            }
+          }
+        } else {
+          const n1 = await countPeopleOnCanvas(canvas, 0.5, 0)
+          count1El.textContent = String(n1)
+          count2El.textContent = '—'
+          countTotalEl.textContent = String(n1)
+        }
+      } catch (e) {
+        setStatus(`Детекция: ${e instanceof Error ? e.message : String(e)}`)
+      } finally {
+        busy = false
+      }
       return
     }
     const snap = drawVideoFrame(video, canvas)
@@ -214,6 +354,7 @@ export function mountApp(root: HTMLElement): void {
       setStatus('Запрос списка камер…')
       const devices = await listCameraDevices()
       const current = camSelect.value
+      const current2 = camSelect2.value
       camSelect.innerHTML = ''
       for (const d of devices) {
         const opt = document.createElement('option')
@@ -224,29 +365,86 @@ export function mountApp(root: HTMLElement): void {
       if (current && [...camSelect.options].some((o) => o.value === current)) {
         camSelect.value = current
       }
+
+      camSelect2.replaceChildren()
+      const empty2 = document.createElement('option')
+      empty2.value = ''
+      empty2.textContent = '— не выбрана —'
+      camSelect2.appendChild(empty2)
+      for (const d of devices) {
+        const opt = document.createElement('option')
+        opt.value = d.deviceId
+        opt.textContent = d.label || `Камера ${d.deviceId.slice(0, 8)}…`
+        camSelect2.appendChild(opt)
+      }
+      if (current2 && [...camSelect2.options].some((o) => o.value === current2)) {
+        camSelect2.value = current2
+      } else {
+        camSelect2.value = ''
+      }
+      if (camSelect2.value && camSelect2.value === camSelect.value) {
+        camSelect2.value = ''
+      }
+
       setStatus('Список камер обновлён')
     } catch (e) {
       setStatus(`Камеры: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
-  const onCameraChange = async (): Promise<void> => {
+  const onCameraChange = async (token?: number): Promise<void> => {
     const id = camSelect.value
     if (!id) {
       return
     }
+    let id2 = camSelect2.value
+    if (id2 && id2 === id) {
+      // Защита от двойного открытия одного и того же устройства: на части драйверов это даёт "зелёное" мерцание.
+      camSelect2.value = ''
+      id2 = ''
+      setStatus('Камера 2 совпадает с Камерой 1 — второй канал отключён')
+    }
     try {
-      setStatus('Запуск камеры…')
-      await startCamera(video, id)
-      setStatus('Камера активна')
-      persist({ cameraDeviceId: id, lastSource: 'camera', lastStreamUrl: '' })
+      setStatus(id2 ? 'Запуск двух камер…' : 'Запуск камеры…')
+      await startCamera(video1, id)
+      if (token !== undefined && token !== sourceSwitchToken) {
+        return
+      }
+      if (activeVideoSource !== 'camera') {
+        return
+      }
+      if (id2) {
+        await startCamera(video2, id2)
+        if (token !== undefined && token !== sourceSwitchToken) {
+          return
+        }
+        if (activeVideoSource !== 'camera') {
+          return
+        }
+        setStatus('Загрузка модели для канала 2 (параллельный воркер)…')
+        await ensureSecondDetectorWorker(setStatus)
+      } else {
+        stopVideoElement(video2)
+      }
+      setStatus(id2 ? 'Обе камеры активны' : 'Камера 1 активна')
+      const patch: Partial<AppSettings> = {
+        cameraDeviceId: id,
+        lastSource: 'camera',
+        lastStreamUrl: ''
+      }
+      if (id2) {
+        patch.cameraDeviceId2 = id2
+      } else {
+        patch.cameraDeviceId2 = null
+      }
+      persist(patch)
       startTimer()
     } catch (e) {
       setStatus(`Камера: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
-  const connectStream = async (pageUrl: string): Promise<void> => {
+  const connectStream = async (pageUrl: string, token?: number): Promise<void> => {
     const api = window.viewPeople
     if (!api.resolveStreamUrl) {
       throw new Error('Нет API resolveStreamUrl (preload)')
@@ -254,6 +452,12 @@ export function mountApp(root: HTMLElement): void {
     prepareVideoSwitch()
     setStatus('Разрешение ссылки…')
     const res = await api.resolveStreamUrl(pageUrl.trim())
+    if (token !== undefined && token !== sourceSwitchToken) {
+      return
+    }
+    if (activeVideoSource !== 'stream') {
+      return
+    }
     if (!res.ok) {
       throw new Error(res.message)
     }
@@ -262,6 +466,12 @@ export function mountApp(root: HTMLElement): void {
     }
     setStatus('Запуск потока…')
     await startHttpStream(video, res.url)
+    if (token !== undefined && token !== sourceSwitchToken) {
+      return
+    }
+    if (activeVideoSource !== 'stream') {
+      return
+    }
     persist({ lastStreamUrl: pageUrl.trim(), lastSource: 'stream' })
     setStatus('Поток воспроизводится')
     startTimer()
@@ -277,13 +487,14 @@ export function mountApp(root: HTMLElement): void {
       }
       return
     }
+    const token = ++sourceSwitchToken
     prepareVideoSwitch()
     activeVideoSource = mode
     updateSourceUi()
 
     if (mode === 'camera') {
       persist({ lastSource: 'camera', lastStreamUrl: '' })
-      await onCameraChange()
+      await onCameraChange(token)
       return
     }
     if (mode === 'file') {
@@ -348,7 +559,14 @@ export function mountApp(root: HTMLElement): void {
     if (activeVideoSource !== 'camera') {
       return
     }
-    void onCameraChange()
+    void onCameraChange(++sourceSwitchToken)
+  })
+
+  camSelect2.addEventListener('change', () => {
+    if (activeVideoSource !== 'camera') {
+      return
+    }
+    void onCameraChange(++sourceSwitchToken)
   })
 
   btnFile.addEventListener('click', () => {
@@ -391,7 +609,7 @@ export function mountApp(root: HTMLElement): void {
         return
       }
       try {
-        await connectStream(raw)
+        await connectStream(raw, ++sourceSwitchToken)
       } catch (e) {
         setStatus(`Поток: ${e instanceof Error ? e.message : String(e)}`)
       }
@@ -418,6 +636,8 @@ export function mountApp(root: HTMLElement): void {
   window.addEventListener('beforeunload', () => {
     stopTimer()
     stopVideoElement(video)
+    stopVideoElement(video1)
+    stopVideoElement(video2)
     disposeDetectorWorker()
   })
 
@@ -459,6 +679,16 @@ export function mountApp(root: HTMLElement): void {
       const camId = settings.cameraDeviceId
       const hasCam =
         typeof camId === 'string' && [...camSelect.options].some((o) => o.value === camId)
+      const camId2 = settings.cameraDeviceId2
+      const hasCam2 =
+        typeof camId2 === 'string' &&
+        camId2.length > 0 &&
+        [...camSelect2.options].some((o) => o.value === camId2)
+      if (hasCam2) {
+        camSelect2.value = camId2
+      } else {
+        camSelect2.value = ''
+      }
 
       const savedSource = settings.lastSource
       if (savedSource === 'file' || savedSource === 'stream' || savedSource === 'camera') {
@@ -478,7 +708,7 @@ export function mountApp(root: HTMLElement): void {
         settings.lastStreamUrl.length > 0
       ) {
         try {
-          await connectStream(settings.lastStreamUrl)
+          await connectStream(settings.lastStreamUrl, ++sourceSwitchToken)
           return
         } catch {
           setStatus('Сохранённый поток недоступен — выберите другой источник')
@@ -515,7 +745,7 @@ export function mountApp(root: HTMLElement): void {
         camSelect.value = camId!
         activeVideoSource = 'camera'
         updateSourceUi()
-        await onCameraChange()
+        await onCameraChange(++sourceSwitchToken)
         return
       }
 
@@ -523,7 +753,7 @@ export function mountApp(root: HTMLElement): void {
       updateSourceUi()
       if (camSelect.options.length > 0) {
         camSelect.selectedIndex = 0
-        await onCameraChange()
+        await onCameraChange(++sourceSwitchToken)
       } else {
         setStatus('Нет камер — переключитесь на «Видеофайл» или «Трансляция»')
       }

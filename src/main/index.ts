@@ -130,6 +130,13 @@ function registerIpc(store: Store<AppSettings>): void {
     if (typeof p.cameraDeviceId === 'string') {
       store.set('cameraDeviceId', p.cameraDeviceId)
     }
+    if (p.cameraDeviceId2 !== undefined) {
+      if (p.cameraDeviceId2 === null || p.cameraDeviceId2 === '') {
+        store.delete('cameraDeviceId2' as 'cameraDeviceId2')
+      } else if (typeof p.cameraDeviceId2 === 'string') {
+        store.set('cameraDeviceId2', p.cameraDeviceId2)
+      }
+    }
     if (typeof p.lastVideoPath === 'string') {
       store.set('lastVideoPath', p.lastVideoPath)
     }

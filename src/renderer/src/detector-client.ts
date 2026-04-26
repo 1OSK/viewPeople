@@ -7,14 +7,18 @@ export type DetectorClientConfig =
   | { mode: 'coco-ssd' }
   | { mode: 'yolo-onnx'; modelUrl?: string }
 
+/** Индексы воркеров: 0 — одиночный поток (файл/поток/первая камера), 1 — вторая камера (параллельный инференс). */
+export type DetectorWorkerSlot = 0 | 1
+
 /** Первая загрузка YOLO по сети может быть долгой. */
 const INIT_TIMEOUT_MS = 600_000
 /** Один кадр не должен «висеть» бесконечно. */
 const DETECT_TIMEOUT_MS = 90_000
 
-let worker: Worker | null = null
-let initDone = false
-let initPromise: Promise<void> | null = null
+const NUM_WORKERS = 2 as const
+const workers: [Worker | null, Worker | null] = [null, null]
+const initDone: [boolean, boolean] = [false, false]
+const initPromise: [Promise<void> | null, Promise<void> | null] = [null, null]
 
 let currentConfig: DetectorClientConfig = { mode: 'coco-ssd' }
 
@@ -69,27 +73,27 @@ export function getDetectorConfig(): DetectorClientConfig {
   return normalize(currentConfig)
 }
 
-function getWorker(): Worker {
-  if (!worker) {
-    worker = new Worker(new URL('./detector.worker.ts', import.meta.url), { type: 'module' })
+function getWorker(slot: DetectorWorkerSlot): Worker {
+  if (!workers[slot]) {
+    workers[slot] = new Worker(new URL('./detector.worker.ts', import.meta.url), { type: 'module' })
   }
-  return worker
+  return workers[slot]!
 }
 
-export function disposeDetectorWorker(): void {
-  worker?.terminate()
-  worker = null
-  initDone = false
-  initPromise = null
-}
-
-export async function ensureDetectorLoaded(onStatus?: (text: string) => void): Promise<void> {
-  if (initDone) {
+/**
+ * Гарантирует, что воркер `slot` загружен (модель в памяти).
+ * Слот 0 — обычный путь; слот 1 — вторая камера (два экземпляра модели — параллельный инференс).
+ */
+export async function ensureWorkerSlotLoaded(
+  slot: DetectorWorkerSlot,
+  onStatus?: (text: string) => void
+): Promise<void> {
+  if (initDone[slot]) {
     return
   }
-  if (!initPromise) {
-    const w = getWorker()
-    initPromise = (async (): Promise<void> => {
+  if (!initPromise[slot]) {
+    const w = getWorker(slot)
+    initPromise[slot] = (async (): Promise<void> => {
       const payload = await buildInitMessage()
       await new Promise<void>((resolve, reject) => {
         let settled = false
@@ -100,8 +104,8 @@ export async function ensureDetectorLoaded(onStatus?: (text: string) => void): P
           settled = true
           w.removeEventListener('message', onMessage)
           w.terminate()
-          worker = null
-          initDone = false
+          workers[slot] = null
+          initDone[slot] = false
           reject(
             new Error(
               `Инициализация модели: превышено ${INIT_TIMEOUT_MS / 60_000} мин — проверьте сеть или файлы установки`
@@ -121,8 +125,9 @@ export async function ensureDetectorLoaded(onStatus?: (text: string) => void): P
             settled = true
             clearTimeout(to)
             w.removeEventListener('message', onMessage)
-            initDone = true
+            initDone[slot] = true
             resolve()
+            return
           }
           if (m?.type === 'error') {
             settled = true
@@ -132,30 +137,56 @@ export async function ensureDetectorLoaded(onStatus?: (text: string) => void): P
           }
         }
         w.addEventListener('message', onMessage)
-        w.postMessage(payload)
+        try {
+          w.postMessage(payload)
+        } catch (e) {
+          settled = true
+          clearTimeout(to)
+          w.removeEventListener('message', onMessage)
+          workers[slot] = null
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
       })
     })().catch((err: unknown) => {
-      initPromise = null
-      initDone = false
+      initPromise[slot] = null
+      initDone[slot] = false
       throw err
     })
   }
   try {
-    await initPromise
+    await initPromise[slot]!
   } catch (e) {
-    initPromise = null
-    initDone = false
+    initPromise[slot] = null
+    initDone[slot] = false
     throw e
   }
 }
 
-export async function countPeopleOnCanvas(
-  canvas: HTMLCanvasElement,
-  scoreThreshold = 0.5
+/** Совместимость: один воркер (слот 0) — для файла/трансляции и «одна камера». */
+export async function ensureDetectorLoaded(onStatus?: (text: string) => void): Promise<void> {
+  await ensureWorkerSlotLoaded(0, onStatus)
+}
+
+/** Второй воркер YOLO/COCO — только для параллельного анализа второй камеры. */
+export async function ensureSecondDetectorWorker(onStatus?: (text: string) => void): Promise<void> {
+  await ensureWorkerSlotLoaded(1, onStatus)
+}
+
+export function disposeDetectorWorker(): void {
+  for (const slot of [0, 1] as const) {
+    workers[slot]?.terminate()
+    workers[slot] = null
+    initDone[slot] = false
+    initPromise[slot] = null
+  }
+}
+
+function runDetectOnBitmap(
+  bitmap: ImageBitmap,
+  slot: DetectorWorkerSlot,
+  scoreThreshold: number
 ): Promise<number> {
-  await ensureDetectorLoaded()
-  const bitmap = await createImageBitmap(canvas)
-  const w = getWorker()
+  const w = getWorker(slot)
   return new Promise((resolve, reject) => {
     let settled = false
     const to = setTimeout(() => {
@@ -198,4 +229,38 @@ export async function countPeopleOnCanvas(
       reject(e instanceof Error ? e : new Error(String(e)))
     }
   })
+}
+
+/**
+ * Кадр уже в `ImageBitmap` — детекция в указанном воркере (для параллельного `Promise.all` с двумя кадрами).
+ */
+export async function countPeopleOnImageBitmap(
+  bitmap: ImageBitmap,
+  slot: DetectorWorkerSlot,
+  scoreThreshold = 0.5
+): Promise<number> {
+  try {
+    await ensureWorkerSlotLoaded(slot)
+  } catch (e) {
+    try {
+      bitmap.close()
+    } catch {
+      // no-op: bitmap may already be detached/closed
+    }
+    throw e
+  }
+  return runDetectOnBitmap(bitmap, slot, scoreThreshold)
+}
+
+/**
+ * @param slot — 0 (по умолчанию) для основного потока; 1 — если нужен отдельный проход (редко; для API совместимости)
+ */
+export async function countPeopleOnCanvas(
+  canvas: HTMLCanvasElement,
+  scoreThreshold = 0.5,
+  slot: DetectorWorkerSlot = 0
+): Promise<number> {
+  await ensureWorkerSlotLoaded(slot)
+  const bitmap = await createImageBitmap(canvas)
+  return runDetectOnBitmap(bitmap, slot, scoreThreshold)
 }
